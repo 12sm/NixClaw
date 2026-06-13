@@ -77,6 +77,12 @@ struct NixClawApp: App {
       }
       .environmentObject(appConfig)
       .environmentObject(backgroundModeManager)
+      .task {
+        // Load the spoken-glasses primer from Burrow (GET /v1/glasses/primer).
+        // Falls back to the built-in systemInstruction if unconfigured or the
+        // fetch fails. See GeminiConfig.activeSystemInstruction.
+        await GeminiConfig.loadPrimer()
+      }
 
       // Registration view handles the flow for connecting to the glasses via Meta AI
       RegistrationView(viewModel: wearablesViewModel)
