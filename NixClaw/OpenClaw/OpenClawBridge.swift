@@ -14,8 +14,6 @@ class OpenClawBridge: ObservableObject {
     config.timeoutIntervalForRequest = 120
     self.session = URLSession(configuration: config)
     self.sessionKey = OpenClawBridge.newSessionKey()
-    
-    NSLog("[OpenClaw] Upload server: %@", AppConfig.shared.uploadServerURL)
   }
 
   func resetSession() {
@@ -26,51 +24,6 @@ class OpenClawBridge: ObservableObject {
   private static func newSessionKey() -> String {
     let ts = ISO8601DateFormatter().string(from: Date())
     return "agent:main:glass:\(ts)"
-  }
-
-  // MARK: - Image Upload
-  
-  /// Upload image to NAS, returns the file path on success
-  private func uploadImage(_ image: UIImage) async -> String? {
-    guard let jpegData = image.jpegData(compressionQuality: 0.7) else {
-      NSLog("[OpenClaw] Failed to encode image as JPEG")
-      return nil
-    }
-    
-    let uploadURL = "\(AppConfig.shared.uploadServerURL)/upload"
-    guard let url = URL(string: uploadURL) else {
-      NSLog("[OpenClaw] Invalid upload URL: %@", uploadURL)
-      return nil
-    }
-    
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("Bearer \(AppConfig.shared.uploadServerToken)", forHTTPHeaderField: "Authorization")
-    request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
-    request.httpBody = jpegData
-    
-    do {
-      let (data, response) = try await session.data(for: request)
-      guard let httpResponse = response as? HTTPURLResponse,
-            (200...299).contains(httpResponse.statusCode) else {
-        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        NSLog("[OpenClaw] Upload failed: HTTP %d", code)
-        return nil
-      }
-      
-      // Parse response: {"ok": true, "path": "/tmp/nixclaw/..."}
-      if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-         let path = json["path"] as? String {
-        NSLog("[OpenClaw] Image uploaded to: %@", path)
-        return path
-      }
-      
-      NSLog("[OpenClaw] Upload response missing path")
-      return nil
-    } catch {
-      NSLog("[OpenClaw] Upload error: %@", error.localizedDescription)
-      return nil
-    }
   }
 
   // MARK: - Agent Chat (session continuity via x-openclaw-session-key header)
@@ -96,26 +49,29 @@ class OpenClawBridge: ObservableObject {
     NSLog("[OpenClaw] delegateTask called. image param is: %@", image != nil ? "NOT NIL" : "NIL")
     await MainActor.run { self.debugImageReachedDelegateTask = (image != nil) }
 
-    // Build the message - if image exists, upload it first and reference the path
-    var finalTask = task
-    
-    if let image = image {
-      NSLog("[OpenClaw] Uploading image to NAS...")
-      if let imagePath = await uploadImage(image) {
-        // Prepend image path instruction to the task
-        finalTask = "First, analyze the image at \(imagePath) using the image tool. Then respond to: \(task)"
-        NSLog("[OpenClaw] Message with image path: %@", String(finalTask.prefix(100)))
-      } else {
-        NSLog("[OpenClaw] Image upload failed, sending text-only")
-      }
+    // Build messages. If a frame is present, send it INLINE as an OpenAI image_url
+    // data URI — Burrow's /v1/chat/completions (Phase 1) normalizes this to the
+    // internal image shape and routes it to Scout's vision-capable model.
+    // (No separate upload server needed.)
+    var messages: [[String: Any]] = []
+    if let image = image, let jpeg = image.jpegData(compressionQuality: 0.7) {
+      let dataURI = "data:image/jpeg;base64,\(jpeg.base64EncodedString())"
+      messages = [[
+        "role": "user",
+        "content": [
+          ["type": "text", "text": task],
+          ["type": "image_url", "image_url": ["url": dataURI]],
+        ],
+      ]]
+      NSLog("[OpenClaw] Sending inline image (%d bytes jpeg)", jpeg.count)
+    } else {
+      messages = [["role": "user", "content": task]]
     }
 
     let body: [String: Any] = [
       "model": "openclaw",
-      "messages": [
-        ["role": "user", "content": finalTask]
-      ],
-      "stream": false
+      "messages": messages,
+      "stream": false,
     ]
 
     do {
