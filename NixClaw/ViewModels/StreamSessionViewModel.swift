@@ -48,7 +48,12 @@ class StreamSessionViewModel: ObservableObject {
   @Published var showPhotoPreview: Bool = false
 
   // Gemini Live integration
-  var geminiSessionVM: GeminiSessionViewModel?
+  var geminiSessionVM: GeminiSessionViewModel? {
+    didSet { wireGeminiCallbacks() }
+  }
+  // True when the next captured photo is for an on-demand vision answer (audio-first)
+  // and should be injected to Gemini rather than shown in the preview UI.
+  private var captureForVision = false
 
   // The core DAT SDK StreamSession - handles all streaming operations
   private var streamSession: StreamSession
@@ -129,8 +134,41 @@ class StreamSessionViewModel: ObservableObject {
       Task { @MainActor [weak self] in
         guard let self else { return }
         if let uiImage = UIImage(data: photoData.data) {
-          self.capturedPhoto = uiImage
-          self.showPhotoPreview = true
+          if self.captureForVision {
+            // On-demand capture for an audio-first vision question: feed it to
+            // Gemini for this turn instead of showing the photo-preview UI.
+            self.captureForVision = false
+            self.geminiSessionVM?.injectVisionFrame(uiImage)
+          } else {
+            self.capturedPhoto = uiImage
+            self.showPhotoPreview = true
+          }
+        }
+      }
+    }
+  }
+
+  /// Wire the audio-first callbacks once the Gemini view model is attached.
+  private func wireGeminiCallbacks() {
+    geminiSessionVM?.onRequestVisionFrame = { [weak self] in
+      guard let self else { return }
+      self.captureForVision = true
+      // capturePhoto returns false if the request can't be initiated (e.g. no
+      // active camera). On-device: if this fails when not streaming, we'll need
+      // to briefly start the stream around the capture.
+      if !self.streamSession.capturePhoto(format: .jpeg) {
+        NSLog("[Stream] capturePhoto request rejected — camera may need an active stream")
+        self.captureForVision = false
+      }
+    }
+    geminiSessionVM?.onSetVideoStreaming = { [weak self] on in
+      guard let self else { return }
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        if on {
+          if self.streamSession.state == .stopped { await self.streamSession.start() }
+        } else {
+          await self.streamSession.stop()
         }
       }
     }
@@ -161,6 +199,19 @@ class StreamSessionViewModel: ObservableObject {
     // Auto-start Gemini AI when streaming starts
     if let gemini = geminiSessionVM, !gemini.isGeminiActive {
       await gemini.startSession()
+      // Explicit glasses-streaming start = continuous video to Gemini.
+      gemini.videoEnabled = true
+    }
+  }
+
+  /// Audio-first glasses session: keep the camera/device available (so vision
+  /// questions can grab one frame on demand) but do NOT forward video to Gemini.
+  /// This is the agreed default UX and the entry point for Live Activity / Siri.
+  func startGlassesAudioFirst() async {
+    await streamSession.start()
+    if let gemini = geminiSessionVM, !gemini.isGeminiActive {
+      await gemini.startSession()
+      // videoEnabled stays false — audio-first; vision uses on-demand capture.
     }
   }
 
@@ -224,6 +275,8 @@ class StreamSessionViewModel: ObservableObject {
     Task {
       if let gemini = geminiSessionVM, !gemini.isGeminiActive {
         await gemini.startSession()
+        // iPhone camera mode = continuous video to Gemini.
+        gemini.videoEnabled = true
       }
     }
   }

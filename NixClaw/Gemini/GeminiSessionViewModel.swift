@@ -13,6 +13,10 @@ class GeminiSessionViewModel: ObservableObject {
   @Published var isInBackground: Bool = false
   @Published var sessionDuration: TimeInterval = 0
   @Published var isAudioOnlyMode: Bool = false
+  /// Audio-first: when false, video frames are NOT streamed to Gemini (vision
+  /// uses on-demand single-frame capture instead). Turned on by the set_video
+  /// tool or the explicit glasses-streaming start path.
+  @Published var videoEnabled: Bool = false
   private let geminiService = GeminiLiveService()
   // openClawBridge is now exposed via computed property (see below)
   private var toolCallRouter: ToolCallRouter?
@@ -52,6 +56,18 @@ class GeminiSessionViewModel: ObservableObject {
   var streamingMode: StreamingMode = .glasses
   var onPauseVideoCapture: (() -> Void)?
   var onResumeVideoCapture: (() -> Void)?
+  /// Ask the stream layer to capture ONE frame on demand (audio-first vision).
+  var onRequestVisionFrame: (() -> Void)?
+  /// Ask the stream layer to start/stop continuous camera streaming (set_video).
+  var onSetVideoStreaming: ((Bool) -> Void)?
+
+  // Vision intent → on-demand single-frame capture (only when not already streaming).
+  private let visionKeywords = [
+    "look", "looking at", "see this", "what is this", "what's this", "whats this",
+    "what am i", "what color", "how many", "read this", "read the", "identify",
+    "describe", "in front of me", "what do you see", "check this out",
+  ]
+  private var requestedVisionThisTurn = false
 
   init() {
     setupBackgroundObservers()
@@ -121,6 +137,7 @@ class GeminiSessionViewModel: ObservableObject {
       Task { @MainActor in
         // Clear user transcript when AI finishes responding
         self.userTranscript = ""
+        self.requestedVisionThisTurn = false
       }
     }
 
@@ -131,11 +148,20 @@ class GeminiSessionViewModel: ObservableObject {
         self.aiTranscript = ""
         // User is talking — keep the session alive.
         self.bumpActivity()
-        // Explicit "I'm done" phrases end the session immediately.
         let lower = self.userTranscript.lowercased()
+        // Explicit "I'm done" phrases end the session immediately.
         if self.stopPhrases.contains(where: { lower.contains($0) }) {
           NSLog("[GeminiSession] Stop phrase detected — ending session")
           self.stopSession()
+          return
+        }
+        // Audio-first: if the user asks something visual and we're not already
+        // streaming video, grab one frame and inject it so Gemini can answer.
+        if !self.videoEnabled, !self.requestedVisionThisTurn,
+           self.visionKeywords.contains(where: { lower.contains($0) }) {
+          self.requestedVisionThisTurn = true
+          NSLog("[GeminiSession] Vision intent detected — requesting one frame")
+          self.onRequestVisionFrame?()
         }
       }
     }
@@ -203,6 +229,22 @@ class GeminiSessionViewModel: ObservableObject {
       guard let self else { return }
       Task { @MainActor in
         for call in toolCall.functionCalls {
+          // set_video is handled locally (toggle continuous streaming), not sent to Scout.
+          if call.name == "set_video" {
+            let on = (call.args["on"] as? Bool) ?? false
+            NSLog("[GeminiSession] set_video(%@)", on ? "on" : "off")
+            self.setVideo(on)
+            let response: [String: Any] = [
+              "toolResponse": ["functionResponses": [[
+                "id": call.id,
+                "name": call.name,
+                "response": ["result": on ? "Continuous video is now on." : "Continuous video is now off."],
+              ]]],
+            ]
+            self.geminiService.sendToolResponse(response)
+            continue
+          }
+
           // DEBUG: Log frame availability at tool call time
           let frameAvailable = self.lastVideoFrame != nil
           NSLog("[GeminiSession] Tool call received. lastVideoFrame available: %@", frameAvailable ? "YES" : "NO")
@@ -370,14 +412,28 @@ class GeminiSessionViewModel: ObservableObject {
     // This ensures lastVideoFrame is never nil when a tool call needs an image
     lastVideoFrame = image
 
-    // Skip sending to Gemini in audio-only mode or when backgrounded
-    guard !isAudioOnlyMode else { return }
+    // Audio-first: only stream frames to Gemini when continuous video is enabled.
+    guard videoEnabled else { return }
     guard !isInBackground else { return }
     guard isGeminiActive, connectionState == .ready else { return }
     let now = Date()
     guard now.timeIntervalSince(lastVideoFrameTime) >= GeminiConfig.videoFrameInterval else { return }
     lastVideoFrameTime = now
     geminiService.sendVideoFrame(image: image)
+  }
+
+  /// Turn continuous video streaming on/off (set_video tool, or explicit start).
+  func setVideo(_ on: Bool) {
+    videoEnabled = on
+    onSetVideoStreaming?(on)
+  }
+
+  /// Inject a single on-demand frame so Gemini can answer a vision question
+  /// without continuous streaming. Also makes it available to any execute call.
+  func injectVisionFrame(_ image: UIImage) {
+    lastVideoFrame = image
+    geminiService.sendVideoFrame(image: image)
+    NSLog("[GeminiSession] Injected one on-demand frame to Gemini for vision")
   }
 
   /// Get the most recent video frame (for tool calls that need to include an image)

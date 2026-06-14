@@ -85,8 +85,24 @@ enum ToolCallStatus: Equatable {
 enum ToolDeclarations {
 
   static func allDeclarations() -> [[String: Any]] {
-    return [execute]
+    return [execute, setVideo]
   }
+
+  static let setVideo: [String: Any] = [
+    "name": "set_video",
+    "description": "Turn continuous live video streaming on or off. Default is OFF — the glasses are audio-first and a single frame is captured on demand for vision questions. Turn ON only when the user explicitly wants you to keep watching / narrate what they're seeing; turn OFF when they say they're done watching.",
+    "parameters": [
+      "type": "object",
+      "properties": [
+        "on": [
+          "type": "boolean",
+          "description": "true to start continuous video streaming, false to stop it"
+        ]
+      ],
+      "required": ["on"]
+    ] as [String: Any],
+    "behavior": "NON_BLOCKING"
+  ]
 
   static let execute: [String: Any] = [
     "name": "execute",
