@@ -40,6 +40,15 @@ class GeminiSessionViewModel: ObservableObject {
   private var reconnectAttempts = 0
   private let maxReconnectAttempts = 3
 
+  // Auto-close: end an idle session so it doesn't stream (and bill) forever.
+  private var autoCloseTask: Task<Void, Never>?
+  private var lastActivityTime: Date = .distantPast
+  private let autoCloseInterval: TimeInterval = 45
+  private let stopPhrases = [
+    "that's all", "thats all", "that's it", "thats it", "that's everything",
+    "i'm done", "im done", "stop listening", "stop session", "goodbye scout",
+  ]
+
   var streamingMode: StreamingMode = .glasses
   var onPauseVideoCapture: (() -> Void)?
   var onResumeVideoCapture: (() -> Void)?
@@ -120,6 +129,14 @@ class GeminiSessionViewModel: ObservableObject {
       Task { @MainActor in
         self.userTranscript += text
         self.aiTranscript = ""
+        // User is talking — keep the session alive.
+        self.bumpActivity()
+        // Explicit "I'm done" phrases end the session immediately.
+        let lower = self.userTranscript.lowercased()
+        if self.stopPhrases.contains(where: { lower.contains($0) }) {
+          NSLog("[GeminiSession] Stop phrase detected — ending session")
+          self.stopSession()
+        }
       }
     }
 
@@ -279,6 +296,7 @@ class GeminiSessionViewModel: ObservableObject {
     reconnectAttempts = 0
     sessionStartTime = Date()
     startSessionTimer()
+    startAutoCloseTimer()
 
     // Start Dynamic Island Live Activity
     GeminiLiveActivityManager.shared.startActivity()
@@ -295,10 +313,39 @@ class GeminiSessionViewModel: ObservableObject {
     }
   }
 
+  /// Mark the session as active right now (resets the auto-close countdown).
+  private func bumpActivity() {
+    lastActivityTime = Date()
+  }
+
+  /// End the session after `autoCloseInterval` seconds of no user speech.
+  /// Stays alive while the model is speaking or a tool call is in flight.
+  private func startAutoCloseTimer() {
+    autoCloseTask?.cancel()
+    lastActivityTime = Date()
+    autoCloseTask = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 2_000_000_000) // check every 2s
+        guard !Task.isCancelled, let self else { break }
+        guard self.isGeminiActive else { break }
+        // Don't time out while we're mid-turn.
+        if self.isModelSpeaking { self.bumpActivity(); continue }
+        if case .executing = self.toolCallStatus { self.bumpActivity(); continue }
+        if Date().timeIntervalSince(self.lastActivityTime) >= self.autoCloseInterval {
+          NSLog("[GeminiSession] Auto-closing after %.0fs of inactivity", self.autoCloseInterval)
+          self.stopSession()
+          break
+        }
+      }
+    }
+  }
+
   func stopSession() {
     shouldAutoReconnect = false
     sessionTimer?.cancel()
     sessionTimer = nil
+    autoCloseTask?.cancel()
+    autoCloseTask = nil
     sessionStartTime = nil
     sessionDuration = 0
     toolCallRouter?.cancelAll()
