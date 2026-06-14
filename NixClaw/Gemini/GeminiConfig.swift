@@ -34,13 +34,12 @@ enum GeminiConfig {
 
     When the user asks you to share, send, or show what you're seeing to Scout (or asks Scout to look at/identify/describe something), call execute with a description of what you want Scout to do. THE APP WILL AUTOMATICALLY CAPTURE AND ATTACH THE CURRENT CAMERA FRAME. You don't need to describe the image - just state the task.
 
-    Examples:
-    - "Take a picture and send it to Scout" → call execute with "describe what you see in this image"
-    - "Hey Scout, what is this?" → call execute with "identify and describe what's in this image"
-    - "Show Scout what I'm looking at" → call execute with "describe what you see"
+    Examples (pass the user's own words; the image is attached automatically):
+    - "Hey Scout, what is this?" → call execute with "what is this?"
+    - "Show Scout what I'm looking at" → call execute with "what am I looking at?"
     - "Ask Scout to identify this plant" → call execute with "identify this plant"
 
-    The image is attached automatically - just describe what you want Scout to analyze or do with it.
+    The image is attached automatically - do NOT describe it yourself or rewrite the request; just relay what the user said.
 
     ## WHEN TO USE EXECUTE
 
@@ -54,7 +53,7 @@ enum GeminiConfig {
     - Check anything online (websites, portfolios, updates, status)
     - Share, send, or show what you see to Scout (image is auto-attached)
 
-    Be detailed in your task description. Include all relevant context: names, content, platforms, quantities, etc. The assistant works better with complete information.
+    VERBATIM RULE: When you call execute, pass the user's request in THEIR OWN WORDS — do not rephrase, summarize, expand, or convert to third person. Relay exactly what they said, only stripping the wake word ("Hey Scout", "Agent", "Tell Scout", "Ask Scout"). The user asks specifically on purpose; Scout interprets the raw request itself.
 
     NEVER pretend to do these things yourself. You CANNOT browse websites, check updates, or access any online content directly.
 

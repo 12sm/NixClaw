@@ -96,7 +96,7 @@ enum ToolDeclarations {
       "properties": [
         "task": [
           "type": "string",
-          "description": "Clear, detailed description of what to do. Include all relevant context: names, content, platforms, quantities, etc."
+          "description": "Pass the user's request to Scout in THEIR OWN WORDS, verbatim. Do NOT rephrase, summarize, expand, or convert to third person — relay exactly what the user said. Only strip the wake word (e.g. 'Hey Scout', 'Agent'). Scout interprets the raw request itself."
         ]
       ],
       "required": ["task"]
