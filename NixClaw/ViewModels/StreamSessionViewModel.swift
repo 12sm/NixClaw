@@ -194,6 +194,27 @@ class StreamSessionViewModel: ObservableObject {
     }
   }
 
+  /// Start an audio-first glasses session (camera available for on-demand vision,
+  /// but no continuous video to Gemini). Same camera-permission flow as streaming.
+  func handleStartGlassesAudioFirst() async {
+    let permission = Permission.camera
+    do {
+      let status = try await wearables.checkPermissionStatus(permission)
+      if status == .granted {
+        await startGlassesAudioFirst()
+        return
+      }
+      let requestStatus = try await wearables.requestPermission(permission)
+      if requestStatus == .granted {
+        await startGlassesAudioFirst()
+        return
+      }
+      showError("Permission denied")
+    } catch {
+      showError("Permission error: \(error.description)")
+    }
+  }
+
   func startSession() async {
     await streamSession.start()
     // Auto-start Gemini AI when streaming starts

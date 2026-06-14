@@ -111,8 +111,18 @@ struct NonStreamView: View {
         }
 
         CustomButton(
-          title: "Start streaming",
+          title: "Start Glasses (audio-first)",
           style: .primary,
+          isDisabled: !viewModel.hasActiveDevice
+        ) {
+          Task {
+            await viewModel.handleStartGlassesAudioFirst()
+          }
+        }
+
+        CustomButton(
+          title: "Start streaming",
+          style: .secondary,
           isDisabled: !viewModel.hasActiveDevice
         ) {
           Task {
